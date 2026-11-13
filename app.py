@@ -10,12 +10,13 @@ import math
 
 BASE_DIR = Path(__file__).parent
 DATA_DIR = BASE_DIR / "data"
+OUTPUT_DIR = BASE_DIR / "outputs"
 MODEL_PATH = BASE_DIR / "models" / "astraquant_rf_model.pkl"
 
 app = FastAPI(
     title="KRYPT API",
-    description="Multi-asset cryptocurrency funding analytics",
-    version="2.0"
+    description="Multi-asset cryptocurrency funding analytics and historical backtesting",
+    version="2.1"
 )
 
 app.add_middleware(
@@ -53,6 +54,10 @@ except Exception as exc:
     model = None
 
 
+# =========================================================
+# HELPER FUNCTIONS
+# =========================================================
+
 def safe_float(value):
     try:
         number = float(value)
@@ -73,6 +78,7 @@ def load_asset(asset):
     df = pd.DataFrame(raw)
 
     required = ["fundingTime", "fundingRate", "markPrice"]
+
     for column in required:
         if column not in df.columns:
             raise ValueError(f"{asset['file']} is missing {column}")
@@ -116,7 +122,10 @@ def asset_summary(asset, df):
 
 
 def get_asset(asset_id):
-    asset = next((item for item in ASSETS if item["id"] == asset_id.upper()), None)
+    asset = next(
+        (item for item in ASSETS if item["id"] == asset_id.upper()),
+        None
+    )
 
     if asset is None:
         raise HTTPException(status_code=404, detail="Asset not found")
@@ -126,10 +135,17 @@ def get_asset(asset_id):
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Could not read dataset: {exc}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Could not read dataset: {exc}"
+        )
 
     return asset, df
 
+
+# =========================================================
+# REQUEST MODEL
+# =========================================================
 
 class PredictionInput(BaseModel):
     fundingRate: float
@@ -137,6 +153,10 @@ class PredictionInput(BaseModel):
     funding_rate_change: float
     mark_price_return: float
 
+
+# =========================================================
+# MAIN API ROUTES
+# =========================================================
 
 @app.get("/")
 def home():
@@ -184,6 +204,7 @@ def asset_detail(asset_id: str):
     summary = asset_summary(asset, df)
 
     history = []
+
     for _, row in df.tail(300).iterrows():
         history.append({
             "time": row["fundingTime"].isoformat(),
@@ -202,6 +223,7 @@ def asset_detail(asset_id: str):
 
     if not feature_rows.empty:
         row = feature_rows.iloc[-1]
+
         latest_features = {
             "fundingRate": safe_float(row["fundingRate"]),
             "markPrice": safe_float(row["markPrice"]),
@@ -220,11 +242,13 @@ def asset_detail(asset_id: str):
 
 @app.get("/api/overview")
 def overview():
-    asset, df = get_asset("BTC")
     detail = asset_detail("BTC")
 
     if not detail["latest_features"]:
-        raise HTTPException(status_code=400, detail="BTC features are not available")
+        raise HTTPException(
+            status_code=400,
+            detail="BTC features are not available"
+        )
 
     return {
         "asset": "BTCUSDT",
@@ -242,10 +266,17 @@ def overview():
     }
 
 
+# =========================================================
+# RANDOM FOREST PREDICTION
+# =========================================================
+
 @app.post("/api/predict")
 def predict(data: PredictionInput):
     if model is None:
-        raise HTTPException(status_code=503, detail="Random Forest model is unavailable")
+        raise HTTPException(
+            status_code=503,
+            detail="Random Forest model is unavailable"
+        )
 
     input_data = pd.DataFrame(
         [{
@@ -258,6 +289,13 @@ def predict(data: PredictionInput):
     )
 
     probabilities = model.predict_proba(input_data)[0]
+
+    if 1 not in list(model.classes_):
+        raise HTTPException(
+            status_code=500,
+            detail="Model does not contain positive class 1"
+        )
+
     positive_index = list(model.classes_).index(1)
     probability = float(probabilities[positive_index])
     prediction = int(model.predict(input_data)[0])
@@ -286,14 +324,315 @@ def model_info():
         "simulation_only": True
     }
 
+
+# =========================================================
+# QUANT SIGNALS
+# =========================================================
+
 @app.get("/api/signals")
 def get_quant_signals():
-    import pandas as pd
+    possible_paths = [
+        OUTPUT_DIR / "ps20_live_signals.csv",
+        BASE_DIR / "ps20_live_signals.csv"
+    ]
+
+    signal_file = next(
+        (path for path in possible_paths if path.exists()),
+        None
+    )
+
+    if signal_file is None:
+        raise HTTPException(
+            status_code=404,
+            detail="ps20_live_signals.csv was not found in outputs or project root"
+        )
+
     try:
-        # Make sure this path matches where you uploaded the CSV in Step 1
-        df = pd.read_csv("ps20_live_signals.csv") 
-        # Only send the crucial columns to the UI
-        display_data = df[["coin", "spot_close", "basis_bps", "spike_probability", "trade_signal", "action_reason"]]
+        df = pd.read_csv(signal_file)
+
+        required_columns = [
+            "coin",
+            "spot_close",
+            "basis_bps",
+            "spike_probability",
+            "trade_signal",
+            "action_reason"
+        ]
+
+        missing = [
+            column for column in required_columns
+            if column not in df.columns
+        ]
+
+        if missing:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Missing signal columns: {missing}"
+            )
+
+        display_data = df[required_columns].copy()
+        display_data = display_data.replace({float("nan"): None})
+
         return display_data.to_dict(orient="records")
-    except Exception as e:
-        return {"error": str(e)}
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Could not load signals: {exc}"
+        )
+
+
+# =========================================================
+# HISTORICAL HOLD / SELL BACKTEST
+# =========================================================
+
+@app.get("/api/backtest")
+def get_historical_backtest():
+
+    file_path = OUTPUT_DIR / "historical_market_data_6_assets.csv"
+
+    if not file_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail="Historical market dataset not found in outputs folder"
+        )
+
+    try:
+        df = pd.read_csv(file_path)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Could not read historical dataset: {exc}"
+        )
+
+    required_columns = {
+        "coin",
+        "timestamp",
+        "mark_price",
+        "actual_future_funding"
+    }
+
+    if not required_columns.issubset(df.columns):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Dataset must contain: {sorted(required_columns)}"
+        )
+
+    df["timestamp"] = pd.to_datetime(
+        df["timestamp"],
+        utc=True,
+        errors="coerce"
+    )
+
+    df["mark_price"] = pd.to_numeric(
+        df["mark_price"],
+        errors="coerce"
+    )
+
+    df["actual_future_funding"] = pd.to_numeric(
+        df["actual_future_funding"],
+        errors="coerce"
+    )
+
+    df = df.dropna(
+        subset=[
+            "coin",
+            "timestamp",
+            "mark_price",
+            "actual_future_funding"
+        ]
+    )
+
+    df = df[df["mark_price"] > 0]
+    df = df.sort_values(["coin", "timestamp"])
+
+    if df.empty:
+        raise HTTPException(
+            status_code=400,
+            detail="No valid historical rows available for backtesting"
+        )
+
+    # Strategy configuration
+    FUNDING_THRESHOLD = 0.00005
+    TRANSACTION_COST_PER_SIDE = 0.0012
+    INITIAL_CAPITAL = 100000.0
+
+    all_decisions = []
+    summaries = []
+
+    for coin, group in df.groupby("coin"):
+
+        group = group.sort_values("timestamp").reset_index(drop=True)
+
+        capital = INITIAL_CAPITAL
+        in_position = False
+
+        entry_price = None
+        entry_time = None
+
+        total_trades = 0
+        winning_trades = 0
+
+        decisions = []
+
+        for _, row in group.iterrows():
+
+            funding = float(row["actual_future_funding"])
+            price = float(row["mark_price"])
+            timestamp = row["timestamp"]
+
+            action = "WAIT"
+            reason = "Entry condition not met"
+            realized_return = None
+
+            # ENTER A SIMULATED POSITION
+            if not in_position and funding > FUNDING_THRESHOLD:
+
+                in_position = True
+                entry_price = price
+                entry_time = timestamp
+
+                # Deduct entry transaction cost once
+                capital *= (1 - TRANSACTION_COST_PER_SIDE)
+
+                action = "HOLD"
+                reason = "Entry threshold crossed; simulated position opened"
+
+            # EXIT AN EXISTING POSITION
+            elif in_position and funding <= FUNDING_THRESHOLD:
+
+                price_return = (price / entry_price) - 1
+
+                # Apply exit transaction cost once.
+                # Entry cost was already deducted when opening.
+                realized_return = (
+                    (1 + price_return) *
+                    (1 - TRANSACTION_COST_PER_SIDE)
+                ) - 1
+
+                capital *= (1 + realized_return)
+
+                total_trades += 1
+
+                if realized_return > 0:
+                    winning_trades += 1
+
+                action = "SELL"
+                reason = "Funding rate reached or fell below exit threshold"
+
+                in_position = False
+
+            elif in_position:
+
+                action = "HOLD"
+                reason = "Position remains open; exit condition not met"
+
+            decisions.append({
+                "coin": str(coin),
+                "timestamp": timestamp.isoformat(),
+                "funding_rate": round(funding, 8),
+                "mark_price": round(price, 6),
+                "action": action,
+                "reason": reason,
+                "entry_price": round(entry_price, 6) if in_position else None,
+                "entry_timestamp": entry_time.isoformat() if entry_time else None,
+                "realized_trade_return_percent": (
+                    round(realized_return * 100, 4)
+                    if realized_return is not None else None
+                ),
+                "portfolio_value": round(capital, 2)
+            })
+
+        # Close any remaining position at the final historical observation.
+        if in_position and len(group) > 0:
+
+            final_price = float(group.iloc[-1]["mark_price"])
+
+            price_return = (final_price / entry_price) - 1
+
+            final_trade_return = (
+                (1 + price_return) *
+                (1 - TRANSACTION_COST_PER_SIDE)
+            ) - 1
+
+            capital *= (1 + final_trade_return)
+
+            total_trades += 1
+
+            if final_trade_return > 0:
+                winning_trades += 1
+
+            # Update the final decision row to show the simulated exit.
+            decisions[-1]["action"] = "SELL"
+            decisions[-1]["reason"] = (
+                "Backtest ended; remaining position closed at final historical price"
+            )
+            decisions[-1]["realized_trade_return_percent"] = round(
+                final_trade_return * 100, 4
+            )
+            decisions[-1]["portfolio_value"] = round(capital, 2)
+
+            in_position = False
+
+        final_return = (
+            (capital / INITIAL_CAPITAL) - 1
+        ) * 100
+
+        summaries.append({
+            "coin": str(coin),
+            "initial_capital": INITIAL_CAPITAL,
+            "final_equity": round(capital, 2),
+            "return_percent": round(final_return, 2),
+            "total_trades": total_trades,
+            "winning_trades": winning_trades,
+            "losing_trades": total_trades - winning_trades,
+            "win_rate_percent": round(
+                (winning_trades / total_trades) * 100, 2
+            ) if total_trades else 0
+        })
+
+        all_decisions.extend(decisions)
+
+    # Save results for reviewer inspection
+    OUTPUT_DIR.mkdir(exist_ok=True)
+
+    decisions_file = OUTPUT_DIR / "hold_sell_backtest_decisions.csv"
+    summary_file = OUTPUT_DIR / "hold_sell_backtest_summary.csv"
+
+    pd.DataFrame(all_decisions).to_csv(
+        decisions_file,
+        index=False
+    )
+
+    pd.DataFrame(summaries).to_csv(
+        summary_file,
+        index=False
+    )
+
+    return {
+        "strategy": "Historical Funding Threshold Baseline",
+        "strategy_type": "Rule-based historical simulation",
+        "threshold": FUNDING_THRESHOLD,
+        "transaction_cost_per_side": TRANSACTION_COST_PER_SIDE,
+        "initial_capital_per_asset": INITIAL_CAPITAL,
+        "assets_tested": len(summaries),
+        "total_observations": len(all_decisions),
+        "summary": summaries,
+        "decisions": all_decisions,
+        "saved_files": {
+            "decisions": str(decisions_file),
+            "summary": str(summary_file)
+        },
+        "disclaimer": (
+            "Experimental rule-based simulation, not a validated Random Forest "
+            "or XGBoost backtest. Results depend on the historical dataset, "
+            "funding timestamp alignment, execution assumptions and costs."
+        )
+    }
+
+
+# =========================================================
+# END OF KRYPT API
+# =========================================================

@@ -1,0 +1,2 @@
+strategy,initial_capital,final_equity,net_profit,return_percent,max_drawdown_percent,total_trades,win_rate_percent,profit_factor,entry_threshold,max_hold_periods,round_trip_cost_rate
+Historical Funding Threshold,100000.0,90141.0196305032,-9858.9803694968,-9.858980369496795,9.777804751329723,203,0.0,0.0,5e-05,6,0.0024
