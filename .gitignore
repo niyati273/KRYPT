@@ -10,3 +10,10 @@ dist/
 # Temporary files
 .DS_Store
 Thumbs.db
+.env.*
+!.env.example
+*.pem
+*.key
+credentials.json
+secrets.json
+*.bak
