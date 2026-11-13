@@ -285,3 +285,15 @@ def model_info():
         "evaluation_type": "Preliminary historical evaluation; verify against training code",
         "simulation_only": True
     }
+
+@app.get("/api/signals")
+def get_quant_signals():
+    import pandas as pd
+    try:
+        # Make sure this path matches where you uploaded the CSV in Step 1
+        df = pd.read_csv("ps20_live_signals.csv") 
+        # Only send the crucial columns to the UI
+        display_data = df[["coin", "spot_close", "basis_bps", "spike_probability", "trade_signal", "action_reason"]]
+        return display_data.to_dict(orient="records")
+    except Exception as e:
+        return {"error": str(e)}
