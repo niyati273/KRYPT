@@ -1,0 +1,4 @@
+Strategy,Initial Capital ($),Final Equity ($),Gross Profit ($),Net Profit ($),Gross ROI (%),Net ROI (%),Annualized Sharpe Ratio,Sortino Ratio,Max Drawdown (%),Calmar Ratio,Win Rate (%),Profit Factor,Total Trades,Emergency Squeeze Exits,Total Fee Drag ($),Fee Drag (%),Total Slippage Drag ($),Slippage Drag (%)
+Funding Radar (Hybrid AI),100000.0,121690.32,23213.68,21690.32,23.21,21.69,16.073,27.729,1.09,19.88,100.0,999.0,8,3,380.67,0.38,1142.69,1.14
+Point Forecast Only,100000.0,126924.27,55548.67,26924.27,55.55,26.92,5.184,13.142,12.58,2.14,5.38,2.06,279,0,17587.05,17.59,11037.35,11.04
+Naive Always-On Carry,100000.0,166348.13,67045.14,66348.13,67.05,66.35,9.467,22.961,9.45,7.02,100.0,999.0,10,0,464.67,0.46,232.33,0.23
