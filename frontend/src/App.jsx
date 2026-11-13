@@ -1,80 +1,153 @@
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import "./App.css";
 
 const API = "http://127.0.0.1:8000";
 
-function FundingChart({ history }) {
-  if (!history?.length) {
-    return <div className="chart-empty">Waiting for historical data...</div>;
+const money = (value) =>
+  value == null ? "—" : Number(value).toLocaleString("en-US", {
+    maximumFractionDigits: 4,
+  });
+
+const rate = (value) =>
+  value == null ? "—" : `${(Number(value) * 100).toFixed(4)}%`;
+
+const date = (value) =>
+  value ? new Date(value).toLocaleDateString("en-IN", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  }) : "—";
+
+function FundingChart({ history, field = "funding_rate", percent = false }) {
+  const values = (history || [])
+    .map((item) => item[field])
+    .filter((value) => value != null && Number.isFinite(Number(value)))
+    .map(Number);
+
+  if (values.length < 2) {
+    return <div className="chart-empty">Not enough historical data to draw this chart.</div>;
   }
 
-  const values = history.map((item) => item.funding_rate);
   const min = Math.min(...values);
   const max = Math.max(...values);
   const range = max - min || 1;
 
-  const points = values
-    .map((value, index) => {
-      const x = (index / Math.max(values.length - 1, 1)) * 800;
-      const y = 180 - ((value - min) / range) * 150;
-      return `${x},${y}`;
-    })
-    .join(" ");
+  const points = values.map((value, index) => {
+    const x = (index / (values.length - 1)) * 900;
+    const y = 185 - ((value - min) / range) * 155;
+    return `${x},${y}`;
+  }).join(" ");
+
+  const last = values[values.length - 1];
 
   return (
     <div className="chart-wrap">
-      <svg viewBox="0 0 800 210" preserveAspectRatio="none">
-        {[30, 80, 130, 180].map((y) => (
-          <line key={y} x1="0" y1={y} x2="800" y2={y} className="grid-line" />
+      <div className="chart-value-row">
+        <span>MIN {percent ? rate(min) : money(min)}</span>
+        <span>MAX {percent ? rate(max) : money(max)}</span>
+      </div>
+      <svg viewBox="0 0 900 210" preserveAspectRatio="none" role="img" aria-label="Historical data line chart">
+        {[30, 80, 130, 185].map((y) => (
+          <line key={y} x1="0" y1={y} x2="900" y2={y} className="grid-line" />
         ))}
+        <polyline points={points} className="chart-area" />
         <polyline points={points} className="chart-line" />
+        <circle cx="900" cy={185 - ((last - min) / range) * 155} r="5" className="chart-point" />
       </svg>
       <div className="chart-labels">
-        <span>Earlier observations</span>
-        <span>Latest observations</span>
+        <span>Oldest observation</span>
+        <span>Latest observation</span>
       </div>
     </div>
   );
 }
 
+function Stat({ label, value, note }) {
+  return (
+    <div className="stat-card">
+      <span className="stat-label">{label}</span>
+      <strong>{value}</strong>
+      <span className="stat-note">{note}</span>
+    </div>
+  );
+}
+
 function App() {
-  const [overview, setOverview] = useState(null);
+  const [assets, setAssets] = useState([]);
+  const [selectedId, setSelectedId] = useState("BTC");
+  const [detail, setDetail] = useState(null);
   const [model, setModel] = useState(null);
   const [prediction, setPrediction] = useState(null);
+  const [loadingAssets, setLoadingAssets] = useState(true);
+  const [loadingDetail, setLoadingDetail] = useState(false);
   const [predictionLoading, setPredictionLoading] = useState(false);
   const [error, setError] = useState("");
 
   useEffect(() => {
-    async function loadData() {
+    async function loadInitialData() {
       try {
-        const [overviewResponse, modelResponse] = await Promise.all([
-          fetch(`${API}/api/overview`),
+        const [assetResponse, modelResponse] = await Promise.all([
+          fetch(`${API}/api/assets`),
           fetch(`${API}/api/model`),
         ]);
 
-        if (!overviewResponse.ok || !modelResponse.ok) {
-          throw new Error("Could not load API data.");
+        if (!assetResponse.ok || !modelResponse.ok) {
+          throw new Error("The backend returned an error.");
         }
 
-        const overviewData = await overviewResponse.json();
+        const assetData = await assetResponse.json();
         const modelData = await modelResponse.json();
 
-        setOverview(overviewData);
+        setAssets(assetData.assets || []);
         setModel(modelData);
-      } catch {
-        setError(
-          "Unable to connect to the KRYPT backend. Check that the Python server is running."
-        );
+      } catch (err) {
+        setError(`Could not connect to the backend: ${err.message}`);
+      } finally {
+        setLoadingAssets(false);
       }
     }
 
-    loadData();
+    loadInitialData();
   }, []);
 
-  // Send latest historical features to the Random Forest model
+  useEffect(() => {
+    async function loadSelectedAsset() {
+      setLoadingDetail(true);
+      setDetail(null);
+      setPrediction(null);
+      setError("");
+
+      try {
+        const response = await fetch(`${API}/api/assets/${selectedId}`);
+        if (!response.ok) {
+          throw new Error("Could not load this asset's dataset.");
+        }
+        setDetail(await response.json());
+      } catch (err) {
+        setError(err.message);
+      } finally {
+        setLoadingDetail(false);
+      }
+    }
+
+    loadSelectedAsset();
+  }, [selectedId]);
+
+  const sortedAssets = useMemo(() => {
+    return [...assets].sort((a, b) => {
+      if (a.id === "BTC") return -1;
+      if (b.id === "BTC") return 1;
+      return (b.observations || 0) - (a.observations || 0);
+    });
+  }, [assets]);
+
+  const totalRecords = assets.reduce(
+    (sum, asset) => sum + (asset.observations || 0), 0
+  );
+
   const runPrediction = async () => {
-    if (!overview?.latest_features) return;
+    if (selectedId !== "BTC" || !detail?.latest_features) return;
 
     setPredictionLoading(true);
     setError("");
@@ -83,18 +156,13 @@ function App() {
     try {
       const response = await fetch(`${API}/api/predict`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(overview.latest_features),
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(detail.latest_features),
       });
 
-      if (!response.ok) {
-        throw new Error("Prediction request failed.");
-      }
+      if (!response.ok) throw new Error("Prediction request failed.");
 
-      const result = await response.json();
-      setPrediction(result);
+      setPrediction(await response.json());
     } catch (err) {
       setError(err.message);
     } finally {
@@ -103,218 +171,266 @@ function App() {
   };
 
   return (
-    <main>
+    <main className="app-shell">
       <nav className="navbar">
         <a className="brand" href="#">KRYPT<span>.</span></a>
         <div className="nav-links">
-          <a href="#research">Research</a>
-          <a href="#model">Model</a>
-          <a href="#about">About</a>
+          <a href="#markets">Markets</a>
+          <a href="#explorer">Explorer</a>
+          <a href="#intelligence">Intelligence</a>
         </div>
         <div className="nav-status">
-          <span className="status-dot"></span>
-          Research preview
+          <span className="status-dot" />
+          HISTORICAL RESEARCH
         </div>
       </nav>
 
       <section className="hero">
-        <div className="eyebrow">
-          <span></span> QUANTITATIVE CRYPTO RESEARCH
-        </div>
-
-        <h1>
-          Reading the signals
-          <br />
-          <span>behind the market.</span>
-        </h1>
-
+        <div className="eyebrow"><span /> QUANTITATIVE CRYPTO RESEARCH</div>
+        <h1>Understand the market.<br /><span>Read the funding signals.</span></h1>
         <p className="hero-description">
-          A machine learning research platform designed to identify
-          unusual cryptocurrency funding-rate activity using historical
-          market data.
+          A multi-asset research dashboard exploring cryptocurrency
+          perpetual-futures funding rates, market data and machine-learning
+          classification.
         </p>
-
         <div className="hero-meta">
-          <span>BTCUSDT</span>
-          <span className="meta-divider"></span>
-          <span>Historical dataset</span>
-          <span className="meta-divider"></span>
-          <span>Machine learning</span>
+          <span>10 ASSETS</span><i />
+          <span>HISTORICAL DATASETS</span><i />
+          <span>ML RESEARCH</span>
         </div>
       </section>
 
-      <section className="metrics" id="model">
-        <div className="metric">
-          <span className="metric-label">OBSERVATIONS</span>
-          <strong>{overview?.observations ?? "—"}</strong>
-          <span className="metric-note">Historical records</span>
-        </div>
-
-        <div className="metric">
-          <span className="metric-label">TEST ACCURACY</span>
-          <strong>
-            {model ? `${(model.accuracy * 100).toFixed(1)}%` : "—"}
-          </strong>
-          <span className="metric-note">Chronological test set</span>
-        </div>
-
-        <div className="metric">
-          <span className="metric-label">SPIKE RECALL</span>
-          <strong>
-            {model ? `${(model.recall * 100).toFixed(1)}%` : "—"}
-          </strong>
-          <span className="metric-note">Test-set recall</span>
-        </div>
-
-        <div className="metric">
-          <span className="metric-label">MODEL</span>
-          <strong className="model-name">Random Forest</strong>
-          <span className="metric-note">Classification model</span>
-        </div>
+      <section className="overview-grid" id="markets">
+        <Stat label="ASSETS TRACKED" value={assets.length || "—"} note="Configured datasets" />
+        <Stat label="TOTAL RECORDS" value={totalRecords.toLocaleString("en-IN")} note="Across available datasets" />
+        <Stat label="SELECTED ASSET" value={detail?.symbol || "—"} note="Historical explorer" />
+        <Stat label="MODEL" value="Random Forest" note="BTCUSDT classification" />
       </section>
 
-      <section className="research-section" id="research">
+      <section className="section" id="explorer">
         <div className="section-heading">
           <div>
-            <span className="section-kicker">01 / MARKET RESEARCH</span>
-            <h2>Funding rate history</h2>
+            <span className="section-kicker">01 / MULTI-ASSET COVERAGE</span>
+            <h2>Market universe</h2>
+            <p className="section-subtitle">Choose an asset to explore its historical funding data.</p>
           </div>
-          <span className="section-tag">BTCUSDT</span>
+          <span className="section-tag">{assets.length} DATASETS</span>
         </div>
 
-        <div className="chart-card">
-          <div className="chart-top">
-            <div>
-              <span className="small-label">LATEST FUNDING RATE</span>
-              <strong className="latest-value">
-                {overview
-                  ? `${(overview.latest_funding_rate * 100).toFixed(4)}%`
-                  : "—"}
-              </strong>
-            </div>
-            <span className="chart-caption">Last 100 observations</span>
+        {loadingAssets ? (
+          <div className="loading-panel">Loading asset datasets...</div>
+        ) : (
+          <div className="asset-grid">
+            {sortedAssets.map((asset) => (
+              <button
+                className={`asset-card ${selectedId === asset.id ? "selected" : ""}`}
+                key={asset.id}
+                onClick={() => setSelectedId(asset.id)}
+              >
+                <div className="asset-card-top">
+                  <span className="asset-symbol">{asset.id.slice(0, 1)}</span>
+                  <span className="asset-pair">{asset.symbol}</span>
+                </div>
+                <strong className="asset-name">{asset.name}</strong>
+                <span className="asset-rate">{rate(asset.latest_funding_rate)}</span>
+                <span className="asset-card-footer">
+                  {Number(asset.observations || 0).toLocaleString("en-IN")} observations
+                  <span>{selectedId === asset.id ? "SELECTED" : "EXPLORE →"}</span>
+                </span>
+                {asset.error && <span className="asset-error">Dataset unavailable</span>}
+              </button>
+            ))}
           </div>
-
-          <FundingChart history={overview?.history} />
-        </div>
+        )}
       </section>
 
-      {/* MACHINE LEARNING PREDICTION */}
-      <section className="research-section" id="prediction">
+      <section className="section">
         <div className="section-heading">
           <div>
-            <span className="section-kicker">02 / MODEL INFERENCE</span>
-            <h2>Spike detection</h2>
+            <span className="section-kicker">02 / HISTORICAL ANALYTICS</span>
+            <h2>{detail?.name || "Asset"} explorer</h2>
+            <p className="section-subtitle">
+              {detail?.symbol || "Select an asset"} · Historical dataset, not a live market feed
+            </p>
           </div>
-          <span className="section-tag">RANDOM FOREST</span>
+          <span className="section-tag">{detail?.symbol || "LOADING"}</span>
         </div>
 
-        <div className="chart-card">
-          <div className="chart-top">
-            <div>
-              <span className="small-label">MODEL STATUS</span>
-              <strong className="latest-value">
-                {prediction ? "Prediction complete" : "Ready to analyse"}
-              </strong>
+        {loadingDetail ? (
+          <div className="loading-panel">Loading historical observations...</div>
+        ) : detail ? (
+          <>
+            <div className="detail-stats">
+              <Stat label="LATEST FUNDING RATE" value={rate(detail.latest_funding_rate)} note="Most recent available record" />
+              <Stat label="LATEST MARK PRICE" value={money(detail.latest_mark_price)} note="Dataset mark price" />
+              <Stat label="OBSERVATIONS" value={Number(detail.observations).toLocaleString("en-IN")} note="Available records" />
+              <Stat label="DATA COVERAGE" value={`${date(detail.start_date)} – ${date(detail.end_date)}`} note="Recorded date range" />
             </div>
 
-            <span className="chart-caption">BTCUSDT · Historical data</span>
+            <div className="chart-card">
+              <div className="chart-heading">
+                <div>
+                  <span className="small-label">FUNDING RATE</span>
+                  <h3>Historical funding activity</h3>
+                </div>
+                <span className="chart-caption">Latest {detail.history?.length || 0} observations</span>
+              </div>
+              <FundingChart history={detail.history} field="funding_rate" percent />
+            </div>
+
+            <div className="chart-card">
+              <div className="chart-heading">
+                <div>
+                  <span className="small-label">MARK PRICE</span>
+                  <h3>Historical mark-price movement</h3>
+                </div>
+                <span className="chart-caption">Dataset observations</span>
+              </div>
+              <FundingChart history={detail.history} field="mark_price" />
+            </div>
+
+            <div className="data-note">
+              <strong>Dataset coverage</strong>
+              <span>From {date(detail.start_date)} to {date(detail.end_date)}. Different assets have different historical date ranges.</span>
+            </div>
+          </>
+        ) : (
+          <div className="loading-panel">No asset selected.</div>
+        )}
+      </section>
+
+      <section className="section">
+        <div className="section-heading">
+          <div>
+            <span className="section-kicker">03 / CROSS-ASSET RESEARCH</span>
+            <h2>Funding-rate comparison</h2>
+            <p className="section-subtitle">Compare each dataset's latest available funding-rate observation.</p>
+          </div>
+        </div>
+
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>ASSET</th>
+                <th>FUNDING RATE</th>
+                <th>MARK PRICE</th>
+                <th>RECORDS</th>
+                <th>DATA END</th>
+              </tr>
+            </thead>
+            <tbody>
+              {[...assets]
+                .filter((asset) => !asset.error)
+                .sort((a, b) => (b.latest_funding_rate ?? -Infinity) - (a.latest_funding_rate ?? -Infinity))
+                .map((asset) => (
+                  <tr key={asset.id} onClick={() => setSelectedId(asset.id)}>
+                    <td><strong>{asset.id}</strong><span className="table-muted"> {asset.name}</span></td>
+                    <td className="green-text">{rate(asset.latest_funding_rate)}</td>
+                    <td>{money(asset.latest_mark_price)}</td>
+                    <td>{Number(asset.observations).toLocaleString("en-IN")}</td>
+                    <td>{date(asset.end_date)}</td>
+                  </tr>
+                ))}
+            </tbody>
+          </table>
+        </div>
+        <p className="chart-caption table-caption">These are each dataset's latest available observations, not necessarily measurements from the same date.</p>
+      </section>
+
+      <section className="section" id="intelligence">
+        <div className="section-heading">
+          <div>
+            <span className="section-kicker">04 / MACHINE LEARNING</span>
+            <h2>Model intelligence</h2>
+            <p className="section-subtitle">The current trained classifier is configured for BTCUSDT.</p>
+          </div>
+          <span className="section-tag">BTC ONLY</span>
+        </div>
+
+        <div className="model-panel">
+          <div>
+            <span className="small-label">ACTIVE CLASSIFIER</span>
+            <h3>Random Forest</h3>
+            <p>
+              Uses four engineered historical features to classify whether
+              the next funding-rate observation crosses the project's
+              defined spike threshold.
+            </p>
+            <div className="feature-pills">
+              {(model?.features || []).map((feature) => <span key={feature}>{feature}</span>)}
+            </div>
+          </div>
+          <div className="model-metrics">
+            <div><span>Accuracy*</span><strong>{model ? `${(model.accuracy * 100).toFixed(1)}%` : "—"}</strong></div>
+            <div><span>Precision*</span><strong>{model ? `${(model.precision * 100).toFixed(1)}%` : "—"}</strong></div>
+            <div><span>Recall*</span><strong>{model ? `${(model.recall * 100).toFixed(1)}%` : "—"}</strong></div>
+            <div><span>F1 score*</span><strong>{model ? `${(model.f1_score * 100).toFixed(1)}%` : "—"}</strong></div>
+          </div>
+        </div>
+        <p className="chart-caption">*Preliminary evaluation figures from the existing API. Verify the training and test procedure before presenting these as final validated results.</p>
+
+        <div className="prediction-panel">
+          <div className="chart-heading">
+            <div>
+              <span className="small-label">BTC MODEL INFERENCE</span>
+              <h3>Funding-rate spike detection</h3>
+            </div>
+            <span className="section-tag">RANDOM FOREST</span>
           </div>
 
-          <p className="hero-description">
-            Run the trained Random Forest model on the latest four
-            engineered BTC features to classify potential funding-rate
-            spike activity.
-          </p>
-
-          <button
-            className="prediction-button"
-            onClick={runPrediction}
-            disabled={!overview || predictionLoading}
-          >
-            {predictionLoading
-              ? "Analysing..."
-              : prediction
-              ? "Run prediction again"
-              : "Run spike detection"}
-          </button>
-
-          {prediction && (
-            <div className="prediction-result">
-              <span className="small-label">PREDICTION RESULT</span>
-
-              <h3>
-                {prediction.signal}
-              </h3>
-
-              <div className="prediction-probability">
-                <span>Estimated spike probability</span>
-                <strong>
-                  {(prediction.spike_probability * 100).toFixed(2)}%
-                </strong>
-              </div>
-
-              <div className="prediction-bar">
-                <div
-                  className="prediction-bar-fill"
-                  style={{
-                    width: `${prediction.spike_probability * 100}%`,
-                  }}
-                />
-              </div>
-
-              <p className="chart-caption">
-                Model: {prediction.model}
+          {selectedId !== "BTC" ? (
+            <p className="data-note">Select BTC in the market universe to use the current Random Forest prediction feature. Other assets are available for historical analysis only.</p>
+          ) : (
+            <>
+              <p className="section-subtitle">
+                Run the saved classifier on the latest available BTC historical features.
               </p>
-            </div>
+              <button
+                className="primary-button"
+                onClick={runPrediction}
+                disabled={!detail?.latest_features || predictionLoading}
+              >
+                {predictionLoading ? "ANALYSING..." : "RUN SPIKE DETECTION"}
+              </button>
+              {prediction && (
+                <div className="prediction-result">
+                  <span className="small-label">MODEL OUTPUT</span>
+                  <h3>{prediction.signal}</h3>
+                  <div className="probability-row">
+                    <span>Estimated spike-class probability</span>
+                    <strong>{(prediction.spike_probability * 100).toFixed(2)}%</strong>
+                  </div>
+                  <div className="probability-track">
+                    <div style={{ width: `${prediction.spike_probability * 100}%` }} />
+                  </div>
+                  <p className="chart-caption">A classification estimate, not model accuracy or a probability of profit.</p>
+                </div>
+              )}
+            </>
           )}
-
-          <p className="chart-caption">
-            Educational simulation only. Model probability is a
-            classification estimate, not a prediction of profit.
-          </p>
         </div>
       </section>
 
-      <section className="explanation-section" id="about">
-        <div>
-          <span className="section-kicker">03 / THE APPROACH</span>
-          <h2>From market data<br />to model signals.</h2>
+      <section className="method-section">
+        <span className="section-kicker">05 / RESEARCH METHODOLOGY</span>
+        <h2>From raw observations<br />to useful signals.</h2>
+        <div className="method-grid">
+          <article><span>01</span><h3>Data collection</h3><p>Historical funding-rate and mark-price datasets across ten cryptocurrency assets.</p></article>
+          <article><span>02</span><h3>Feature engineering</h3><p>Funding-rate changes and mark-price returns calculated from chronological observations.</p></article>
+          <article><span>03</span><h3>Classification</h3><p>A Random Forest model currently performs BTCUSDT funding-spike classification.</p></article>
         </div>
-        <p>
-          KRYPT studies historical funding rates and related market
-          features to classify whether the next observed funding rate
-          may cross a defined spike threshold. The current research
-          uses a Random Forest classifier trained on BTCUSDT data.
-        </p>
       </section>
 
-      <section className="method-grid">
-        <article>
-          <span>01</span>
-          <h3>Historical data</h3>
-          <p>Organised BTCUSDT funding-rate and market-price observations.</p>
-        </article>
-        <article>
-          <span>02</span>
-          <h3>Feature engineering</h3>
-          <p>Funding-rate changes and market returns extracted as model inputs.</p>
-        </article>
-        <article>
-          <span>03</span>
-          <h3>Spike classification</h3>
-          <p>A Random Forest model estimates the likelihood of a spike event.</p>
-        </article>
-      </section>
+      {error && <div className="error-message">{error}</div>}
 
-      {error && <p className="error-message">{error}</p>}
-
-      <footer>
+      <footer className="footer">
         <a className="brand" href="#">KRYPT<span>.</span></a>
-        <p>Independent quantitative research · Educational simulation only</p>
+        <p>Independent quantitative research · Historical data · Educational simulation only</p>
       </footer>
     </main>
   );
 }
 
 export default App;
+
