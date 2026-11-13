@@ -41,6 +41,8 @@ function FundingChart({ history }) {
 function App() {
   const [overview, setOverview] = useState(null);
   const [model, setModel] = useState(null);
+  const [prediction, setPrediction] = useState(null);
+  const [predictionLoading, setPredictionLoading] = useState(false);
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -61,12 +63,44 @@ function App() {
         setOverview(overviewData);
         setModel(modelData);
       } catch {
-        setError("Unable to connect to the KRYPT backend. Check that the Python server is running.");
+        setError(
+          "Unable to connect to the KRYPT backend. Check that the Python server is running."
+        );
       }
     }
 
     loadData();
   }, []);
+
+  // Send latest historical features to the Random Forest model
+  const runPrediction = async () => {
+    if (!overview?.latest_features) return;
+
+    setPredictionLoading(true);
+    setError("");
+    setPrediction(null);
+
+    try {
+      const response = await fetch(`${API}/api/predict`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(overview.latest_features),
+      });
+
+      if (!response.ok) {
+        throw new Error("Prediction request failed.");
+      }
+
+      const result = await response.json();
+      setPrediction(result);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setPredictionLoading(false);
+    }
+  };
 
   return (
     <main>
@@ -118,13 +152,17 @@ function App() {
 
         <div className="metric">
           <span className="metric-label">TEST ACCURACY</span>
-          <strong>{model ? `${(model.accuracy * 100).toFixed(1)}%` : "—"}</strong>
+          <strong>
+            {model ? `${(model.accuracy * 100).toFixed(1)}%` : "—"}
+          </strong>
           <span className="metric-note">Chronological test set</span>
         </div>
 
         <div className="metric">
           <span className="metric-label">SPIKE RECALL</span>
-          <strong>{model ? `${(model.recall * 100).toFixed(1)}%` : "—"}</strong>
+          <strong>
+            {model ? `${(model.recall * 100).toFixed(1)}%` : "—"}
+          </strong>
           <span className="metric-note">Test-set recall</span>
         </div>
 
@@ -161,9 +199,86 @@ function App() {
         </div>
       </section>
 
+      {/* MACHINE LEARNING PREDICTION */}
+      <section className="research-section" id="prediction">
+        <div className="section-heading">
+          <div>
+            <span className="section-kicker">02 / MODEL INFERENCE</span>
+            <h2>Spike detection</h2>
+          </div>
+          <span className="section-tag">RANDOM FOREST</span>
+        </div>
+
+        <div className="chart-card">
+          <div className="chart-top">
+            <div>
+              <span className="small-label">MODEL STATUS</span>
+              <strong className="latest-value">
+                {prediction ? "Prediction complete" : "Ready to analyse"}
+              </strong>
+            </div>
+
+            <span className="chart-caption">BTCUSDT · Historical data</span>
+          </div>
+
+          <p className="hero-description">
+            Run the trained Random Forest model on the latest four
+            engineered BTC features to classify potential funding-rate
+            spike activity.
+          </p>
+
+          <button
+            className="prediction-button"
+            onClick={runPrediction}
+            disabled={!overview || predictionLoading}
+          >
+            {predictionLoading
+              ? "Analysing..."
+              : prediction
+              ? "Run prediction again"
+              : "Run spike detection"}
+          </button>
+
+          {prediction && (
+            <div className="prediction-result">
+              <span className="small-label">PREDICTION RESULT</span>
+
+              <h3>
+                {prediction.signal}
+              </h3>
+
+              <div className="prediction-probability">
+                <span>Estimated spike probability</span>
+                <strong>
+                  {(prediction.spike_probability * 100).toFixed(2)}%
+                </strong>
+              </div>
+
+              <div className="prediction-bar">
+                <div
+                  className="prediction-bar-fill"
+                  style={{
+                    width: `${prediction.spike_probability * 100}%`,
+                  }}
+                />
+              </div>
+
+              <p className="chart-caption">
+                Model: {prediction.model}
+              </p>
+            </div>
+          )}
+
+          <p className="chart-caption">
+            Educational simulation only. Model probability is a
+            classification estimate, not a prediction of profit.
+          </p>
+        </div>
+      </section>
+
       <section className="explanation-section" id="about">
         <div>
-          <span className="section-kicker">02 / THE APPROACH</span>
+          <span className="section-kicker">03 / THE APPROACH</span>
           <h2>From market data<br />to model signals.</h2>
         </div>
         <p>
