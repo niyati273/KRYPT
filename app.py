@@ -1,4 +1,4 @@
-
+﻿
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -391,7 +391,7 @@ def get_quant_signals():
 @app.get("/api/backtest")
 def get_historical_backtest():
 
-    file_path = OUTPUT_DIR / "historical_market_data_6_assets.csv"
+    file_path = OUTPUT_DIR / "historical_market_data_10_assets.csv"
 
     if not file_path.exists():
         raise HTTPException(
@@ -636,3 +636,4 @@ def get_historical_backtest():
 # =========================================================
 # END OF KRYPT API
 # =========================================================
+
