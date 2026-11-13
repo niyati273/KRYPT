@@ -405,6 +405,30 @@ function App() {
                     <div style={{ width: `${prediction.spike_probability * 100}%` }} />
                   </div>
                   <p className="chart-caption">A classification estimate, not model accuracy or a probability of profit.</p>
+                  {/* --- PERSON C QUANTITATIVE EXECUTION SIGNAL --- */}
+          {quantData && (
+            <div style={{ marginTop: '20px', padding: '15px', backgroundColor: '#111', borderRadius: '8px', border: '1px solid #333' }}>
+              <p style={{ fontSize: '12px', color: '#888', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '8px' }}>
+                Quant Risk Execution
+              </p>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <h3 style={{ 
+                  margin: 0, 
+                  color: quantData.trade_signal === 'HOLD' ? '#00ff88' : '#ff4444',
+                  fontSize: '24px' 
+                }}>
+                  {quantData.trade_signal}
+                </h3>
+                <span style={{ fontSize: '14px', color: '#bbb' }}>
+                  Basis: {quantData.basis_bps} bps
+                </span>
+              </div>
+              <p style={{ fontSize: '13px', color: '#999', marginTop: '10px', fontStyle: 'italic' }}>
+                {quantData.action_reason}
+              </p>
+            </div>
+          )}
+          {/* ---------------------------------------------- */}
                 </div>
               )}
             </>
